@@ -1,7 +1,11 @@
 import random
 import torch
 import torchvision.models as models
-import matplotlib.pyplot as plt
+import pickle
+
+# Set the seed value
+seed = random.randint(1, 100000)
+random.seed(seed)
 
 # Load the pretrained AlexNet model
 weights = models.AlexNet_Weights.DEFAULT
@@ -16,12 +20,19 @@ num_classes = 2  # good or bad
 num_features = alexnet.classifier[6].in_features
 alexnet.classifier[6] = torch.nn.Linear(num_features, num_classes)
 
+# Add dropout to the model
+dropout_prob = 0.5  # Adjust the dropout probability as needed
+alexnet.classifier = torch.nn.Sequential(
+    torch.nn.Dropout(dropout_prob),
+    alexnet.classifier
+)
+
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 
 # Define the transformations
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((256, 256)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -56,6 +67,7 @@ import torch.optim as optim
 import torch.nn as nn
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
 
 # Move the model to the device
 alexnet = alexnet.to(device)
@@ -66,21 +78,27 @@ optimizer = optim.SGD(alexnet.parameters(), lr=0.001, momentum=0.9)
 
 # Training loop
 num_epochs = 100
-mislabel_ratio = 0.1  # 25% mislabeled images in the training set
-removal_ratio = 0.2
+mislabel_ratio = 0.05  # % mislabeled images in the training set
+removal_ratio = 0.2 # % of mislabeled images to remove each loop
+original_mislabel_ratio = mislabel_ratio
+original_total_mislabeled = int(mislabel_ratio * len(train_dataset))
 
-# Initialize lists to store loss and accuracy values
+# Initialize running lists to store loss and accuracy values
 loss_values = []
 accuracy_values = []
 val_loss_values = []
 val_accuracy_values = []
 
-original_mr = mislabel_ratio
-original_total = int(mislabel_ratio * len(train_dataset))
+# Initialize list to save loss and accuracy values across all iterations
+# [[mislabel_ratio, loss_values, accuracy_values, val_loss_values, val_accuracy_values], ...]
+all_values = []
+
+# Randomly select mislabel_ratio% indices to mislabel
 mislabel_indices = random.sample(range(len(train_dataset)), int(mislabel_ratio * len(train_dataset)))
 
-for loop in range(5):
+for loop in range(1 + int(1 / removal_ratio)):
     print(f'Currently {mislabel_ratio * 100:.2f}% of images in the training set are mislabeled.')
+
     for epoch in range(num_epochs):
         running_loss = 0.0
 
@@ -155,27 +173,8 @@ for loop in range(5):
         print(f'Epoch {epoch + 1}/{num_epochs} - Loss: {epoch_loss:.4f} - Accuracy: {accuracy * 100:.2f}% - '
               f'Val Loss: {val_epoch_loss:.4f} - Val Accuracy: {val_accuracy * 100:.2f}%')
 
-    # Generate line graphs
-    epochs = range(1, num_epochs + 1)
-
-    # Loss graph
-    plt.plot(epochs, loss_values, label='Train Loss')
-    plt.plot(epochs, val_loss_values, label='Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Epochs vs Loss')
-    plt.legend()
-    plt.show()
-
-    # Accuracy graph
-    plt.plot(epochs, accuracy_values, label='Train Accuracy')
-    plt.plot(epochs, val_accuracy_values, label='Validation Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.ylim(0, 1)
-    plt.title('Epochs vs Accuracy')
-    plt.legend()
-    plt.show()
+    # Save values
+    all_values.append([mislabel_ratio, loss_values, accuracy_values, val_loss_values, val_accuracy_values])
 
     # Reset
     loss_values = []
@@ -185,9 +184,15 @@ for loop in range(5):
 
     # Remove a portion of mislabeled indices
     if mislabel_ratio > 0:
-        num_indices_to_remove = int(removal_ratio * original_total)
+        num_indices_to_remove = int(removal_ratio * original_total_mislabeled)
         mislabel_indices_to_remove = random.sample(mislabel_indices, num_indices_to_remove)
         mislabel_indices = [i for i in mislabel_indices if i not in mislabel_indices_to_remove]
-        mislabel_ratio -= (removal_ratio * original_mr)
+        mislabel_ratio -= (removal_ratio * original_mislabel_ratio)
+        if mislabel_ratio < 0:
+            mislabel_ratio = 0
 
-        print(f'Corrected 20% of mislabeled images. Remaining mislabel ratio: {mislabel_ratio * 100:.2f}%')
+    print(f'Corrected 20% of mislabeled images. Remaining mislabel ratio: {mislabel_ratio * 100:.2f}%')
+
+# Save all_values to a file
+with open(f'outputs_{seed}.pkl', 'wb') as file:
+    pickle.dump(all_values, file)
